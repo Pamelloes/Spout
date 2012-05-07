@@ -6,6 +6,10 @@ import java.nio.ByteBuffer;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL14;
+import org.lwjgl.opengl.GL30;
+import org.spout.api.Client;
+import org.spout.api.Spout;
+import org.spout.api.render.RenderMode;
 import org.spout.api.render.Texture;
 
 public class ClientTexture extends Texture {
@@ -75,8 +79,8 @@ public class ClientTexture extends Texture {
 		image.getRGB(0, 0, width, height, pixels, 0, width);
 
 		ByteBuffer buffer = BufferUtils.createByteBuffer(width * height * 4);
-		for(int x = 0; x < width; x++){
-			for(int y = 0; y < height; y++){
+		for(int y = 0; y < height; y++){
+			for(int x = 0; x < width; x++){
 				int pixel = pixels[y * width + x];
 				buffer.put((byte) ((pixel >> 16) & 0xFF)); // Red component
 				buffer.put((byte) ((pixel >> 8) & 0xFF));  // Green component
@@ -86,8 +90,13 @@ public class ClientTexture extends Texture {
 		}
 
 		buffer.flip(); 
+		
+		if(((Client)Spout.getEngine()).getRenderMode() == RenderMode.GL30){
+			GL30.glGenerateMipmap(textureID);			
+		}
 
 		GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA8, width, height, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, buffer);
+		
 		//EXTFramebufferObject.glGenerateMipmapEXT(GL11.GL_TEXTURE_2D); //Not sure if this extension is supported on most cards. 
 	}
 }

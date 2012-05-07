@@ -4,6 +4,7 @@ import static org.lwjgl.opengl.GL11.GL_COLOR_BUFFER_BIT;
 import static org.lwjgl.opengl.GL11.GL_DEPTH_BUFFER_BIT;
 import static org.lwjgl.opengl.GL11.glClear;
 
+import org.lwjgl.BufferUtils;
 import org.lwjgl.LWJGLException;
 import org.lwjgl.opengl.ContextAttribs;
 import org.lwjgl.opengl.Display;
@@ -24,10 +25,12 @@ import org.spout.api.math.Vector3;
 import org.spout.api.plugin.PluginStore;
 import org.spout.api.render.BasicCamera;
 import org.spout.api.render.Camera;
+import org.spout.api.render.RenderMode;
 import org.spout.api.render.Shader;
 import org.spout.api.render.Texture;
 import org.spout.engine.renderer.BatchVertexRenderer;
 import org.spout.engine.renderer.shader.ClientShader;
+import org.spout.engine.resources.ClientTexture;
 import org.spout.engine.world.SpoutChunk;
 import org.spout.engine.world.SpoutWorld;
 import org.spout.engine.batcher.PrimitiveBatch;
@@ -35,7 +38,11 @@ import org.spout.engine.filesystem.FileSystem;
 
 
 import java.awt.Color;
+import java.awt.image.BufferedImage;
 import java.io.File;
+import java.nio.ByteBuffer;
+
+import javax.imageio.ImageIO;
 
 
 public class SpoutClient extends SpoutEngine implements Client {
@@ -128,6 +135,8 @@ public class SpoutClient extends SpoutEngine implements Client {
 		
 		texture = (Texture)FileSystem.getResource("texture://Vanilla/terrain.png");
 		texture.load(); //Loads texture to GPU
+		saveTexture(texture);
+		saveTexture(0);
 		textureTest = (BatchVertexRenderer) BatchVertexRenderer.constructNewBatch(GL11.GL_TRIANGLES);
 		textureTest.setShader(shader);
 	}
@@ -324,5 +333,54 @@ public class SpoutClient extends SpoutEngine implements Client {
 			default:
 				return new Color(150,150,150);
 		}
+	}
+	
+	public static void saveTexture(Texture texture) {
+		BufferedImage bi = getTexture(((ClientTexture) texture).getTextureID(), texture.getWidth(), texture.getHeight());
+		try {
+			ImageIO.write(bi, "png", new File("texture-" + ((ClientTexture) texture).getTextureID() + "-resave"));
+		} catch(Exception e) {
+			e.printStackTrace();
+		}
+	}
+	
+	public static void saveTexture(int id) {
+		BufferedImage bi = getTexture(id, 100, 100);
+		try {
+			ImageIO.write(bi, "png", new File("texture-" + id + "-resave"));
+		} catch(Exception e) {
+			e.printStackTrace();
+		}
+	}
+	
+	public static BufferedImage getTexture(int texture, int texWidth, int texHeight) {
+		ByteBuffer buffer = BufferUtils.createByteBuffer(texWidth * texHeight * 3);
+		byte[] pixelData = new byte[texWidth * texHeight * 3];
+		int[] imageData = new int[texWidth * texHeight];
+		buffer.clear();
+		GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+		GL11.glGetTexImage(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGB, GL11.GL_UNSIGNED_BYTE, buffer);
+		buffer.clear();
+		buffer.get(pixelData);
+		for (int l = 0; l < texWidth; l++) {
+			for (int i1 = 0; i1 < texHeight; i1++) {
+				int j1 = l + (texHeight - i1 - 1) * texWidth;
+				int k1 = pixelData[j1 * 3 + 0] & 0xff;
+				int l1 = pixelData[j1 * 3 + 1] & 0xff;
+				int i2 = pixelData[j1 * 3 + 2] & 0xff;
+				int j2 = 0xff000000 | k1 << 16 | l1 << 8 | i2;
+				imageData[l + i1 * texWidth] = j2;
+			}
+		}
+		BufferedImage bufferedimage = new BufferedImage(texWidth, texHeight, 1);
+		bufferedimage.setRGB(0, 0, texWidth, texHeight, imageData, 0, texWidth);
+		return bufferedimage;
+	}
+
+
+
+	@Override
+	public RenderMode getRenderMode() {
+		return RenderMode.GL30;
 	}
 }
