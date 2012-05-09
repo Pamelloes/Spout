@@ -37,6 +37,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.lang3.builder.HashCodeBuilder;
+
 import org.spout.api.Engine;
 import org.spout.api.Source;
 import org.spout.api.Spout;
@@ -47,6 +48,8 @@ import org.spout.api.entity.BlockController;
 import org.spout.api.entity.Controller;
 import org.spout.api.entity.Entity;
 import org.spout.api.generator.WorldGenerator;
+import org.spout.api.generator.biome.Biome;
+import org.spout.api.generator.biome.BiomeGenerator;
 import org.spout.api.geo.World;
 import org.spout.api.geo.cuboid.Chunk;
 import org.spout.api.geo.cuboid.Region;
@@ -62,79 +65,67 @@ import org.spout.api.util.HashUtil;
 import org.spout.api.util.map.concurrent.TSyncIntPairObjectHashMap;
 import org.spout.api.util.map.concurrent.TSyncLongObjectHashMap;
 import org.spout.api.util.sanitation.StringSanitizer;
+
 import org.spout.engine.SpoutEngine;
 import org.spout.engine.entity.EntityManager;
 import org.spout.engine.entity.SpoutEntity;
 import org.spout.engine.filesystem.FileSystem;
+import org.spout.engine.filesystem.WorldFiles;
 import org.spout.engine.util.thread.AsyncManager;
 import org.spout.engine.util.thread.ThreadAsyncExecutor;
 import org.spout.engine.util.thread.snapshotable.SnapshotManager;
 import org.spout.engine.util.thread.snapshotable.SnapshotableLong;
 
 public class SpoutWorld extends AsyncManager implements World {
-
 	private SnapshotManager snapshotManager = new SnapshotManager();
-
 	/**
 	 * The server of this world.
 	 */
 	private final Engine server;
-
 	/**
 	 * The name of this world.
 	 */
 	private final String name;
-
 	/**
 	 * The region source
 	 */
 	private final RegionSource regions;
-
 	/**
 	 * The world seed.
 	 */
 	private final long seed;
-
 	/**
 	 * The spawn position.
 	 */
 	private final Transform spawnLocation = new Transform();
-
 	/**
 	 * The current world age.
 	 */
 	private SnapshotableLong age = new SnapshotableLong(snapshotManager, 0L);
-
 	/**
 	 * The world's UUID.
 	 */
 	private final UUID uid;
-
 	/**
 	 * The generator responsible for generating chunks in this world.
 	 */
 	private final WorldGenerator generator;
-
 	/**
 	 * Holds all of the entities to be simulated
 	 */
 	private final EntityManager entityManager;
-
 	/**
 	 * A set of all players currently connected to this world
 	 */
 	private final Set<Player> players = Collections.newSetFromMap(new ConcurrentHashMap<Player, Boolean>());
-
 	/**
 	 * A map of the loaded columns
 	 */
 	private final TSyncLongObjectHashMap<SpoutColumn> columns = new TSyncLongObjectHashMap<SpoutColumn>();
-
 	/**
 	 * A map of column height map files
 	 */
 	private final TSyncIntPairObjectHashMap<BAAWrapper> heightMapBAAs;
-
 	/**
 	 * The directory where the world data is stored
 	 */
@@ -154,19 +145,13 @@ public class SpoutWorld extends AsyncManager implements World {
 		this.generator = generator;
 		entityManager = new EntityManager();
 		regions = new RegionSource(this, snapshotManager);
-		File world = new File(FileSystem.WORLDS_DIRECTORY, name);
-		world.mkdirs();
-		String generatorName = generator.getName();
-		if (!StringSanitizer.isAlphaNumericUnderscore(generatorName)) {
-			generatorName = Long.toHexString(System.currentTimeMillis());
-			Spout.getEngine().getLogger().severe("Generator name " + generatorName + " is not valid, using " + generatorName + " instead");
-		}
-		worldDirectory = new File(world, generatorName);
+
+		worldDirectory = new File(FileSystem.WORLDS_DIRECTORY, name);
 		worldDirectory.mkdirs();
+
 		heightMapBAAs = new TSyncIntPairObjectHashMap<BAAWrapper>();
 	}
 
-	// TODO need world that loads from disk
 	public void start() {
 		//load spawn regions
 		for (int dx = -1; dx < 1; dx++) {
@@ -238,7 +223,7 @@ public class SpoutWorld extends AsyncManager implements World {
 	public SpoutRegion getRegionFromBlock(int x, int y, int z) {
 		return this.regions.getRegionFromBlock(x, y, z);
 	}
-	
+
 	@Override
 	public SpoutRegion getRegionFromBlock(int x, int y, int z, boolean load) {
 		return this.regions.getRegionFromBlock(x, y, z, load);
@@ -251,7 +236,7 @@ public class SpoutWorld extends AsyncManager implements World {
 		int z = MathHelper.floor(position.getZ());
 		return regions.getRegionFromBlock(x, y, z);
 	}
-	
+
 	@Override
 	public SpoutRegion getRegionFromBlock(Vector3 position, boolean load) {
 		int x = MathHelper.floor(position.getX());
@@ -298,6 +283,18 @@ public class SpoutWorld extends AsyncManager implements World {
 	}
 
 	@Override
+	public Biome getBiomeType(int x, int y, int z) {
+		if (y < 0 || y > getHeight()) {
+			return null;
+		}
+		if (generator instanceof BiomeGenerator) {
+			return ((BiomeGenerator) generator).getBiome(x, y, z, seed);
+		} else {
+			return null;
+		}
+	}
+
+	@Override
 	public int hashCode() {
 		return new HashCodeBuilder(27, 971).append(uid).toHashCode();
 	}
@@ -313,7 +310,6 @@ public class SpoutWorld extends AsyncManager implements World {
 
 			return world.getUID().equals(getUID());
 		}
-
 	}
 
 	@Override
@@ -322,7 +318,7 @@ public class SpoutWorld extends AsyncManager implements World {
 	}
 
 	/**
-	 * Spawns an entity into the world.  Fires off a cancellable EntitySpawnEvent
+	 * Spawns an entity into the world. Fires off a cancellable EntitySpawnEvent
 	 */
 	@Override
 	public void spawnEntity(Entity e) {
@@ -361,18 +357,6 @@ public class SpoutWorld extends AsyncManager implements World {
 						ent.onTick(dt);
 					} catch (Exception e) {
 						Spout.getEngine().getLogger().severe("Unhandled exception during tick for " + ent.toString());
-						e.printStackTrace();
-					}
-				}
-				break;
-			}
-			case 1: {
-				//Resolve and collisions and prepare for a snapshot.
-				for (SpoutEntity ent : entityManager) {
-					try {
-						ent.resolve();
-					} catch (Exception e) {
-						Spout.getEngine().getLogger().severe("Unhandled exception during tick resolution for " + ent.toString());
 						e.printStackTrace();
 					}
 				}
@@ -518,7 +502,7 @@ public class SpoutWorld extends AsyncManager implements World {
 		return Collections.unmodifiableSet(players);
 	}
 
-	public List<CollisionVolume> getCollidingObject(CollisionModel model){
+	public List<CollisionVolume> getCollidingObject(CollisionModel model) {
 		//TODO Make this more general
 		final int minX = MathHelper.floor(model.getPosition().getX());
 		final int minY = MathHelper.floor(model.getPosition().getY());
@@ -535,7 +519,7 @@ public class SpoutWorld extends AsyncManager implements World {
 			for (int dy = minY - 1; dy < maxY; dy++) {
 				for (int dz = minZ; dz < maxZ; dz++) {
 					BlockMaterial material = this.getBlockMaterial(dx, dy, dz);
-					mutable.set((BoundingBox)material.getBoundingArea());
+					mutable.set((BoundingBox) material.getBoundingArea());
 					mutable.offset(dx, dy, dz);
 					if (mutable.intersects(model.getVolume())) {
 						colliding.add(mutable.clone());
@@ -546,7 +530,6 @@ public class SpoutWorld extends AsyncManager implements World {
 
 		//TODO: colliding entities
 		return colliding;
-
 	}
 
 	@Override
@@ -561,6 +544,7 @@ public class SpoutWorld extends AsyncManager implements World {
 
 	/**
 	 * Removes a column corresponding to the given Column coordinates
+	 * 
 	 * @param x the x coordinate
 	 * @param z the z coordinate
 	 */
@@ -571,7 +555,7 @@ public class SpoutWorld extends AsyncManager implements World {
 
 	/**
 	 * Gets the column corresponding to the given Block coordinates
-	 *
+	 * 
 	 * @param x the x block coordinate
 	 * @param z the z block coordinate
 	 * @param create true to create the column if it doesn't exist
@@ -602,14 +586,14 @@ public class SpoutWorld extends AsyncManager implements World {
 
 		BAAWrapper baa = null;
 
-		baa = heightMapBAAs.get(cx,  cz);
+		baa = heightMapBAAs.get(cx, cz);
 
 		if (baa == null) {
 			File columnDirectory = new File(worldDirectory, "col");
 			columnDirectory.mkdirs();
 			File file = new File(columnDirectory, "col" + cx + "_" + cz + ".scl");
 			baa = new BAAWrapper(file, 1024, 256, SpoutRegion.TIMEOUT);
-			BAAWrapper oldBAA = heightMapBAAs.putIfAbsent(cx, cz,  baa);
+			BAAWrapper oldBAA = heightMapBAAs.putIfAbsent(cx, cz, baa);
 			if (oldBAA != null) {
 				baa = oldBAA;
 			}
@@ -625,7 +609,6 @@ public class SpoutWorld extends AsyncManager implements World {
 		int key = HashUtil.nibbleToByte(x, z) & 0xFF;
 
 		return baa.getBlockInputStream(key);
-
 	}
 
 	public OutputStream getHeightMapOutputStream(int x, int z) {
@@ -635,7 +618,6 @@ public class SpoutWorld extends AsyncManager implements World {
 		int key = HashUtil.nibbleToByte(x, z) & 0xFF;
 
 		return baa.getBlockOutputStream(key);
-
 	}
 
 	@Override
@@ -649,6 +631,9 @@ public class SpoutWorld extends AsyncManager implements World {
 	}
 
 	public void unload(boolean save) {
+		if (save) {
+			WorldFiles.saveWorldData(this);
+		}
 		for (Region r : regions.getRegions()) {
 			r.unload(save);
 		}
@@ -694,8 +679,8 @@ public class SpoutWorld extends AsyncManager implements World {
 	}
 
 	@Override
-	public boolean setBlockController(int x, int y, int z, BlockController controller, Source source) {
-		return this.getRegionFromBlock(x, y, z).setBlockController(x, y, z, controller, source);
+	public void setBlockController(int x, int y, int z, BlockController controller) {
+		getRegionFromBlock(x, y, z).setBlockController(x, y, z, controller);
 	}
 
 	@Override

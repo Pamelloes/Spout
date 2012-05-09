@@ -25,9 +25,6 @@
  */
 package org.spout.engine.scheduler;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
@@ -83,7 +80,7 @@ import org.spout.engine.util.thread.snapshotable.SnapshotableArrayList;
  * During this stage, entity collisions are handled.
  * <li><b>Finalize Tick</b><br>
  * During this stage - entities are moved between entity managers.
- *  - chunks are compressed if necessary.
+ * - chunks are compressed if necessary.
  * <li><b>Pre-snapshot</b><br>
  * This is a MONITOR stage, data is stable and no modifications are allowed.
  * <li><b>Copy Snapshot</b><br>
@@ -91,60 +88,34 @@ import org.spout.engine.util.thread.snapshotable.SnapshotableArrayList;
  * is unstable so no reads are permitted during this stage.
  * </ul>
  * </ul>
- *
  */
 public final class SpoutScheduler implements Scheduler {
 	/**
 	 * The number of milliseconds between pulses.
 	 */
 	private static final int PULSE_EVERY = 50;
-
 	/**
 	 * Target Frames per Second for the renderer
 	 */
 	private static final int TARGET_FPS = 60;
-
 	/**
 	 * The server this scheduler is managing for.
 	 */
 	private final Engine server;
-
-	/**
-	 * A list of new tasks to be added.
-	 */
-	private final List<SpoutTask> newTasks = new ArrayList<SpoutTask>();
-
-	/**
-	 * A list of tasks to be removed.
-	 */
-	private final List<SpoutTask> oldTasks = new ArrayList<SpoutTask>();
-
-	/**
-	 * A list of active tasks.
-	 */
-	private final List<SpoutTask> tasks = new ArrayList<SpoutTask>();
-
-	private final List<SpoutWorker> activeWorkers = Collections.synchronizedList(new ArrayList<SpoutWorker>());
-
 	/**
 	 * A snapshot manager for local snapshot variables
 	 */
 	private final SnapshotManager snapshotManager = new SnapshotManager();
-
 	/**
 	 * A list of all AsyncManagers
 	 */
 	private final SnapshotableArrayList<AsyncExecutor> asyncExecutors = new SnapshotableArrayList<AsyncExecutor>(snapshotManager, null);
-
 	private final AtomicLong tickStartTime = new AtomicLong();
-
 	private volatile boolean shutdown = false;
-
 	private final SpoutSnapshotLock snapshotLock = new SpoutSnapshotLock();
-
 	private final Thread mainThread;
-
 	private Thread renderThread;
+	private final SpoutTaskManager taskManager;
 
 	/**
 	 * Creates a new task scheduler.
@@ -154,19 +125,19 @@ public final class SpoutScheduler implements Scheduler {
 		this.server = server;
 
 		mainThread = new MainThread();
-		renderThread  = new RenderThread();
+		renderThread = new RenderThread();
+		
+		taskManager = new SpoutTaskManager(true, mainThread);
 	}
 
-
 	private class RenderThread extends Thread {
-
-		public RenderThread(){
+		public RenderThread() {
 			super("Render Thread");
 		}
 
 		@Override
-		public void run(){
-			SpoutClient c = (SpoutClient)Spout.getEngine();
+		public void run() {
+			SpoutClient c = (SpoutClient) Spout.getEngine();
 			c.initRenderer();
 			int rate = (int) ((1f / TARGET_FPS) * 1000);
 			long lastTick = System.currentTimeMillis();
@@ -184,18 +155,11 @@ public final class SpoutScheduler implements Scheduler {
 						Spout.log("[Severe] Interrupted while sleeping!");
 					}
 				}
-
 			}
-
-
-
 		}
-
 	}
 
-
 	private class MainThread extends Thread {
-
 		public MainThread() {
 			super("MainThread");
 			ThreadsafetyManager.setMainThread(this);
@@ -278,14 +242,14 @@ public final class SpoutScheduler implements Scheduler {
 		}
 	}
 
-
 	public void startRenderThread() {
-		if(!(Spout.getEngine() instanceof SpoutClient)) throw new IllegalStateException("Cannot start the rendering thread unless on the client");
-		if(renderThread.isAlive()){
+		if (!(Spout.getEngine() instanceof SpoutClient)) {
+			throw new IllegalStateException("Cannot start the rendering thread unless on the client");
+		}
+		if (renderThread.isAlive()) {
 			throw new IllegalStateException("Attempt was made to start the render thread twice");
 		}
 		renderThread.start();
-
 	}
 
 	/**
@@ -308,20 +272,26 @@ public final class SpoutScheduler implements Scheduler {
 	 * Stops the scheduler and all tasks.
 	 */
 	public void stop() {
-		cancelAllTasks();
-		shutdown = true;
+		stop(0);
 	}
-
+	
 	/**
-	 * Schedules the specified task.
-	 *
-	 * @param task The task.
+	 * Stops the scheduler and waits for all tasks to complete
+	 * 
+	 * @param timeout the time in ms, after the main thread completes, to wait for all the tasks to stop
 	 */
-	private int schedule(SpoutTask task) {
-		synchronized (newTasks) {
-			newTasks.add(task);
+	public void stop(long timeout) {
+		shutdown = true;
+		try {
+			mainThread.join(timeout);
+		} catch (InterruptedException e) {
+			server.getLogger().info("Main thread interrupted when shutting down");
 		}
-		return task.getTaskId();
+		if (timeout > 0) {
+			taskManager.shutdown(timeout);
+		} else {
+			taskManager.shutdown(1L);
+		}
 	}
 
 	/**
@@ -330,39 +300,8 @@ public final class SpoutScheduler implements Scheduler {
 	private boolean tick(long delta) throws InterruptedException {
 		TickStage.setStage(TickStage.TICKSTART);
 		asyncExecutors.copySnapshot();
-
-		// Bring in new tasks this tick.
-		synchronized (newTasks) {
-			for (SpoutTask task : newTasks) {
-				tasks.add(task);
-			}
-			newTasks.clear();
-		}
-
-		// Remove old tasks this tick.
-		synchronized (oldTasks) {
-			for (SpoutTask task : oldTasks) {
-				tasks.remove(task);
-			}
-			oldTasks.clear();
-		}
-
-		// Run the relevant tasks.
-		for (Iterator<SpoutTask> it = tasks.iterator(); it.hasNext();) {
-			SpoutTask task = it.next();
-			boolean cont = false;
-			try {
-				if (task.isSync()) {
-					cont = task.pulse();
-				} else {
-					activeWorkers.add(new SpoutWorker(task, this));
-				}
-			} finally {
-				if (!cont) {
-					it.remove();
-				}
-			}
-		}
+		
+		taskManager.heartbeat(delta);
 
 		List<AsyncExecutor> executors = asyncExecutors.get();
 
@@ -504,32 +443,32 @@ public final class SpoutScheduler implements Scheduler {
 
 	@Override
 	public int scheduleSyncDelayedTask(Object plugin, Runnable task, long delay) {
-		return scheduleSyncRepeatingTask(plugin, task, delay, -1);
+		return taskManager.scheduleSyncDelayedTask(plugin, task, delay);
 	}
 
 	@Override
 	public int scheduleSyncDelayedTask(Object plugin, Runnable task) {
-		return scheduleSyncDelayedTask(plugin, task, 0);
+		return taskManager.scheduleSyncDelayedTask(plugin, task);
 	}
 
 	@Override
 	public int scheduleSyncRepeatingTask(Object plugin, Runnable task, long delay, long period) {
-		return schedule(new SpoutTask(plugin, task, true, delay, period));
+		return taskManager.scheduleSyncRepeatingTask(plugin, task, delay, period);
 	}
 
 	@Override
 	public int scheduleAsyncDelayedTask(Object plugin, Runnable task, long delay) {
-		return scheduleAsyncRepeatingTask(plugin, task, delay, -1);
+		return taskManager.scheduleAsyncDelayedTask(plugin, task, delay);
 	}
 
 	@Override
 	public int scheduleAsyncDelayedTask(Object plugin, Runnable task) {
-		return scheduleAsyncRepeatingTask(plugin, task, 0, -1);
+		return taskManager.scheduleAsyncDelayedTask(plugin, task);
 	}
 
 	@Override
 	public int scheduleAsyncRepeatingTask(Object plugin, Runnable task, long delay, long period) {
-		return schedule(new SpoutTask(plugin, task, false, delay, period));
+		return taskManager.scheduleAsyncRepeatingTask(plugin, task, delay, period);
 	}
 
 	@Override
@@ -539,55 +478,27 @@ public final class SpoutScheduler implements Scheduler {
 
 	@Override
 	public void cancelTask(int taskId) {
-		synchronized (oldTasks) {
-			for (SpoutTask task : tasks) {
-				if (task.getTaskId() == taskId) {
-					oldTasks.add(task);
-					return;
-				}
-			}
-		}
+		taskManager.cancelTask(taskId);
 	}
 
 	@Override
 	public void cancelTasks(Object plugin) {
-		synchronized (oldTasks) {
-			for (SpoutTask task : tasks) {
-				if (task.getOwner() == plugin) {
-					oldTasks.add(task);
-				}
-			}
-		}
+		taskManager.cancelTasks(plugin);
 	}
 
 	@Override
 	public void cancelAllTasks() {
-		synchronized (oldTasks) {
-			for (SpoutTask spoutTask : tasks) {
-				oldTasks.add(spoutTask);
-			}
-		}
+		taskManager.cancelAllTasks();
 	}
 
 	@Override
 	public List<Worker> getActiveWorkers() {
-		return new ArrayList<Worker>(activeWorkers);
+		return taskManager.getActiveWorkers();
 	}
 
 	@Override
 	public List<Task> getPendingTasks() {
-		ArrayList<Task> result = new ArrayList<Task>();
-		for (SpoutTask spoutTask : tasks) {
-			result.add(spoutTask);
-		}
-		return result;
-	}
-
-	synchronized void workerComplete(SpoutWorker worker) {
-		activeWorkers.remove(worker);
-		if (!worker.shouldContinue()) {
-			oldTasks.add(worker.getTask());
-		}
+		return taskManager.getPendingTasks();
 	}
 
 	@Override
@@ -598,7 +509,6 @@ public final class SpoutScheduler implements Scheduler {
 	public final Thread getMainThread() {
 		return mainThread;
 	}
-
 
 	@Override
 	public long getTickTime() {

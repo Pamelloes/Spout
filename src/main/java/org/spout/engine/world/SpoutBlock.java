@@ -27,13 +27,13 @@ package org.spout.engine.world;
 
 import org.spout.api.Source;
 import org.spout.api.entity.BlockController;
+import org.spout.api.generator.biome.Biome;
 import org.spout.api.geo.World;
 import org.spout.api.geo.cuboid.Block;
 import org.spout.api.geo.cuboid.Chunk;
 import org.spout.api.geo.cuboid.Region;
 import org.spout.api.geo.discrete.Point;
 import org.spout.api.material.BlockMaterial;
-import org.spout.api.material.Material;
 import org.spout.api.material.block.BlockFace;
 import org.spout.api.material.source.DataSource;
 import org.spout.api.material.source.MaterialData;
@@ -57,11 +57,11 @@ public class SpoutBlock implements Block {
 	public SpoutBlock(Point position, Source source) {
 		this(position.getWorld(), position.getBlockX(), position.getBlockY(), position.getBlockZ(), source);
 	}
-	
+
 	public SpoutBlock(World world, int x, int y, int z, Source source) {
 		this(world, x, y, z, null, source);
 	}
-	
+
 	public SpoutBlock(World world, int x, int y, int z, Chunk chunk, Source source) {
 		this.x = x;
 		this.y = y;
@@ -147,7 +147,6 @@ public class SpoutBlock implements Block {
 		sb.chunk = null;
 		return sb;
 	}
-
 
 	@Override
 	public boolean equals(Object other) {
@@ -256,18 +255,18 @@ public class SpoutBlock implements Block {
 
 	@Override
 	public BlockController getController() {
-		return this.getChunk().getBlockController(this.x, this.y, this.z);
+		return getRegion().getBlockController(x, y, z);
 	}
 
 	@Override
 	public Block setController(BlockController controller) {
-		this.getChunk().setBlockController(this.x, this.y, this.z, controller, this.source);
+		getRegion().setBlockController(x, y, z, controller);
 		return this;
 	}
 
 	@Override
 	public boolean hasController() {
-		return this.getController() != null;
+		return getController() != null;
 	}
 
 	@Override
@@ -293,5 +292,10 @@ public class SpoutBlock implements Block {
 			chunk.updateBlockPhysics(this.x, this.y - 1, this.z);
 		}
 		return this;
+	}
+
+	@Override
+	public Biome getBiomeType() {
+		return world.getBiomeType(x, y, z);
 	}
 }

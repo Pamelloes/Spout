@@ -48,11 +48,11 @@ import org.spout.api.protocol.NetworkSynchronizer;
 import org.spout.api.util.thread.DelayedWrite;
 import org.spout.api.util.thread.SnapshotRead;
 import org.spout.api.util.thread.Threadsafe;
+
 import org.spout.engine.protocol.SpoutSession;
 import org.spout.engine.util.TextWrapper;
 
 public class SpoutPlayer implements Player {
-
 	private final AtomicReference<SpoutSession> sessionLive = new AtomicReference<SpoutSession>();
 	private SpoutSession session;
 	private final String name;
@@ -65,7 +65,6 @@ public class SpoutPlayer implements Player {
 	private boolean online;
 	private final int hashcode;
 	private final PlayerInputState inputState = new PlayerInputState();
-	private Stack<Screen> screenStack = new Stack<Screen>();
 
 	public SpoutPlayer(String name) {
 		this.name = name;
@@ -318,28 +317,4 @@ public class SpoutPlayer implements Player {
 		return inputState;
 	}
 
-	@Override
-	public Stack<Screen> getScreenStack() {
-		return screenStack;
-	}
-
-	@Override
-	public void openScreen(Screen screen) {
-		screenStack.add(screen);
-	}
-
-	@Override
-	public void closeScreen() {
-		screenStack.pop();
-	}
-
-	@Override
-	public void closeScreen(Screen screen) {
-		screenStack.remove(screen);
-	}
-
-	@Override
-	public Screen getFocusedScreen() {
-		return screenStack.firstElement();
-	}
 }

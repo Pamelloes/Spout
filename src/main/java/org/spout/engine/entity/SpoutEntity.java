@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.spout.api.Source;
 import org.spout.api.Spout;
+import org.spout.api.Tickable;
 import org.spout.api.collision.CollisionModel;
 import org.spout.api.collision.CollisionStrategy;
 import org.spout.api.collision.CollisionVolume;
@@ -50,7 +51,6 @@ import org.spout.api.entity.component.EntityComponent;
 import org.spout.api.event.entity.EntityControllerChangeEvent;
 import org.spout.api.event.entity.EntityHealthChangeEvent;
 import org.spout.api.geo.World;
-import org.spout.api.geo.cuboid.Block;
 import org.spout.api.geo.cuboid.Chunk;
 import org.spout.api.geo.cuboid.Region;
 import org.spout.api.geo.discrete.Point;
@@ -62,6 +62,7 @@ import org.spout.api.math.Vector3;
 import org.spout.api.model.Model;
 import org.spout.api.player.Player;
 import org.spout.api.util.concurrent.OptimisticReadWriteLock;
+
 import org.spout.engine.SpoutConfiguration;
 import org.spout.engine.SpoutEngine;
 import org.spout.engine.protocol.SpoutSession;
@@ -69,9 +70,8 @@ import org.spout.engine.world.SpoutChunk;
 import org.spout.engine.world.SpoutRegion;
 import org.spout.engine.world.SpoutWorld;
 
-public class SpoutEntity implements Entity {
+public class SpoutEntity implements Entity, Tickable {
 	public static final int NOTSPAWNEDID = -1;
-
 	//Thread-safe
 	private final AtomicReference<EntityManager> entityManagerLive;
 	private final AtomicReference<Controller> controllerLive;
@@ -81,9 +81,7 @@ public class SpoutEntity implements Entity {
 	private final AtomicInteger health = new AtomicInteger(1), maxHealth = new AtomicInteger(1);
 	private final AtomicInteger id = new AtomicInteger();
 	private final AtomicInteger viewDistanceLive = new AtomicInteger();
-
 	private static final long serialVersionUID = 1L;
-	private static final Transform DEAD = new Transform(Point.invalid, Quaternion.IDENTITY, Vector3.ZERO);
 	private final OptimisticReadWriteLock lock = new OptimisticReadWriteLock();
 	private final Transform transform = new Transform();
 	private boolean justSpawned = true;
@@ -97,6 +95,7 @@ public class SpoutEntity implements Entity {
 	private Model model;
 	private Thread owningThread;
 	private Transform lastTransform = transform;
+	private Point collisionPoint;
 
 	public SpoutEntity(SpoutEngine engine, Transform transform, Controller controller, int viewDistance) {
 		id.set(NOTSPAWNEDID);
@@ -112,13 +111,15 @@ public class SpoutEntity implements Entity {
 		}
 
 		map = new GenericDatatableMap();
-		this.viewDistance = viewDistance;
 		viewDistanceLive.set(viewDistance);
 
-		//Only call setController if the controller was null (indicates this entity was just created)
-		if (controller != null) {
-			this.controller = controller;
-			setController(controller);
+		controllerLive.set(controller);
+		if(controller != null)  {
+			if (controller instanceof PlayerController) {
+				setObserver(true);
+			}
+			controller.attachToEntity(this);
+			controller.onAttached();
 		}
 	}
 
@@ -130,11 +131,14 @@ public class SpoutEntity implements Entity {
 		this(engine, new Transform(point, Quaternion.IDENTITY, Vector3.ONE), controller);
 	}
 
+	@Override
 	public void onTick(float dt) {
-		lastTransform = transform.copy();
+		if (this.transform != null && this.transform.getPosition() != null && this.transform.getPosition().getWorld() != null && this.transform.getRotation() != null && this.transform.getScale() != null) {
+			lastTransform = transform.copy();
+		}
 
-		if (controller != null && controller.getParent() != null && !isDead()) {
-			controller.onTick(dt);
+		if (controllerLive.get() != null && controllerLive.get().getParent() != null) {
+			controllerLive.get().onTick(dt);
 		}
 
 		if (controllerLive.get() instanceof PlayerController) {
@@ -146,28 +150,52 @@ public class SpoutEntity implements Entity {
 	}
 
 	/**
+	 * Called right before resolving collisions. This is necessary to make sure all entities'
+	 * get their collisions set.
+	 * @return
+	 */
+	public boolean preResolve() {
+		//Don't need to do collisions if we have no collision volume
+		if (this.collision == null || this.getWorld() == null || controllerLive.get() == null) {
+			return false;
+		}
+
+		//Set collision point at the current position of the entity.
+		collisionPoint = this.transform.getPosition();
+
+		//Move the collision volume to the new position
+		this.collision.setPosition(collisionPoint);
+
+		//This will let SpoutRegion know it should call resolve for this entity.
+		return true;
+	}
+
+	/**
 	 * Called when the tick is finished and collisions need to be resolved and
 	 * move events fired
 	 */
 	public void resolve() {
-		//Don't need to do collisions if we have no collision volume
-		if (this.collision == null || this.getWorld() == null) {
-			return;
+		if (Spout.debugMode()) {
+			System.out.println("COLLISION DEBUGGING");
+			System.out.println("Current Collision: " + this.collision.toString());
 		}
 
-		//Resolve Collisions Here
-		final Point location = this.transform.getPosition();
+		List<CollisionVolume> colliding = ((SpoutWorld) collisionPoint.getWorld()).getCollidingObject(this.collision);
 
-		//Move the collision volume to the new position
-		this.collision.setPosition(location);
-
-		List<CollisionVolume> colliding = ((SpoutWorld) location.getWorld()).getCollidingObject(this.collision);
-
-		Vector3 offset = this.lastTransform.getPosition().subtract(location);
+		Vector3 offset = this.lastTransform.getPosition().subtract(collisionPoint);
 		for (CollisionVolume box : colliding) {
+			if (Spout.debugMode()) {
+				System.out.println("Colliding box: " + box.toString());
+			}
 			Vector3 collision = this.collision.resolve(box);
+			if (Spout.debugMode()) {
+				System.out.println("Collision vector: " + collision.toString());
+			}
 			if (collision != null) {
-				collision = collision.subtract(location);
+				collision = collision.subtract(collisionPoint);
+				if (Spout.debugMode()) {
+					System.out.println("Collision point: " + collision.toString() + " Collision vector: " + collision);
+				}
 
 				if (collision.getX() != 0F) {
 					offset = new Vector3(collision.getX(), offset.getY(), offset.getZ());
@@ -179,13 +207,17 @@ public class SpoutEntity implements Entity {
 					offset = new Vector3(offset.getX(), offset.getY(), collision.getZ());
 				}
 
+				if (Spout.debugMode()) {
+					System.out.println("Collision offset: " + offset.toString());
+				}
 				if (this.getCollision().getStrategy() == CollisionStrategy.SOLID && box.getStrategy() == CollisionStrategy.SOLID) {
-					this.setPosition(location.add(offset));
+					this.setPosition(collisionPoint.add(offset));
+					if (Spout.debugMode()) {
+						System.out.println("New Position: " + this.getPosition());
+					}
 				}
-				if (controllerLive.get() != null) {
-					Block b = this.transform.getPosition().getWorld().getBlock((int) box.getPosition().getX(), (int) box.getPosition().getY(), (int) box.getPosition().getZ());
-					controllerLive.get().onCollide(b);
-				}
+
+				controllerLive.get().onCollide(getWorld().getBlock(box.getPosition()));
 			}
 		}
 
@@ -277,17 +309,17 @@ public class SpoutEntity implements Entity {
 
 	@Override
 	public void roll(float ang) {
-		setRoll(getRoll()+ang);
+		setRoll(getRoll() + ang);
 	}
 
 	@Override
 	public void pitch(float ang) {
-		setPitch(getPitch()+ang);
+		setPitch(getPitch() + ang);
 	}
 
 	@Override
 	public void yaw(float ang) {
-		setYaw(getYaw()+ang);
+		setYaw(getYaw() + ang);
 	}
 
 	@Override
@@ -331,8 +363,9 @@ public class SpoutEntity implements Entity {
 		boolean invalidAccess = !(this.owningThread == current || Spout.getEngine().getMainThread() == current);
 
 		if (invalidAccess && Spout.getEngine().debugMode()) {
-			if (attemptedAction == null)
+			if (attemptedAction == null) {
 				attemptedAction = "Unknown Action";
+			}
 
 			throw new IllegalAccessError("Tried to " + attemptedAction + " from another thread {current: " + Thread.currentThread().getPriority() + " owner: " + owningThread.getName() + "}!");
 		}
@@ -410,17 +443,19 @@ public class SpoutEntity implements Entity {
 
 	@Override
 	public boolean kill() {
-		Point p = transform.getPosition();
-		boolean alive = p.getWorld() != null;
-		transform.set(DEAD);
+		//Do not overkill this entity >.>.
+		if (transform == null || transform.getPosition() == null || chunkLive.get() == null || entityManagerLive.get() == null) {
+			return false;
+		}
+		transform.set(null);
 		chunkLive.set(null);
 		entityManagerLive.set(null);
-		return alive;
+		return true;
 	}
 
 	@Override
 	public boolean isDead() {
-		return id.get() != NOTSPAWNEDID && transform.getPosition().getWorld() == null;
+		return id.get() != NOTSPAWNEDID && (transform == null || chunkLive.get() == null || entityManagerLive.get() == null);
 	}
 
 	// TODO - needs to be made thread safe
